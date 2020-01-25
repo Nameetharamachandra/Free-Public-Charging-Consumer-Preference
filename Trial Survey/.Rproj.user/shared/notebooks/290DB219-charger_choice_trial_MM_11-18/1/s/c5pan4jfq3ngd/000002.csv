@@ -1,0 +1,4 @@
+"0","data <- data.wide %>% pivot_longer(starts_with('Scenario'),"
+"0","                      names_to = c('ScenarioNum'),"
+"0","                      names_pattern = 'Scenario(.*)',"
+"0","                      values_to = 'Choice')"

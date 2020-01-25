@@ -1,0 +1,3 @@
+"0","colnames(design)[1] <- 'ScenarioNum'"
+"0","data$ScenarioNum <- as.integer(data$ScenarioNum)"
+"0","data <- left_join(data,design, by='ScenarioNum')"

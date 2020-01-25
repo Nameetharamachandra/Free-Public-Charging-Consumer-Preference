@@ -1,0 +1,83 @@
+---
+  title: "Free Charging Trial Survey"
+author: "Michael Maness"
+date: "November 18, 2019"
+output:
+  html_document: default
+pdf_document: default
+---
+  
+#{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(tidyr)
+library(apollo)
+library(ggplot2)
+#
+
+## Load Dataset
+
+
+#{r load-data}
+data.wide <- read.csv('trial_data_freecharge_coded.csv')
+data.wide$ID <- 1:nrow(data.wide)
+design <- read.csv('experimental_design_trial.csv')
+#
+
+## Table Manipulation
+
+
+#{r data-long}
+data <- data.wide %>% pivot_longer(starts_with('Scenario'),
+                                   names_to = c('ScenarioNum'),
+                                   names_pattern = 'Scenario(.*)',
+                                   values_to = 'Choice')
+
+
+
+
+#{r data-elim-scenarios}
+data <- data %>% filter(!is.na(Choice))
+
+
+
+  
+#{r combine-data-design}
+colnames(design)[1] <- 'ScenarioNum'
+data$ScenarioNum <- as.integer(data$ScenarioNum)
+data <- left_join(data,design, by='ScenarioNum')
+
+##Data Cleaning
+#remove unwanted columns
+data<-data[-c(1:30,32:55,57:60,78,81,89:90)]
+
+#To remove all the rows with NA values
+data<-data[1:43]
+data[data[1:43] == -99] <- NA
+na.omit(data)
+
+#Data manipulation
+
+#1:conver the birth year into age 
+data$Birthyear<- ifelse(data$Birthyear>1900, 2020-data$Birthyear,data$Birthyear)
+
+#function to check the factor levels in columns
+install.packages(tidyverse)
+library(tidyverse)
+data %>%
+  map( function(x) table(x) )
+
+summary(data)
+
+#Model
+install.packages('rpart')
+install.packages('rattle')
+
+# load libraries
+library(rpart)
+library(rattle)
+rpart <- rpart(Choice ~ ., data=data, method="class")
+
+rpart
+# plot decision tree
+fancyRpartPlot(rpart, main="EV")

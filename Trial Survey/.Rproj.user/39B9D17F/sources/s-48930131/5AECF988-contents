@@ -1,0 +1,489 @@
+---
+title: "Free Charging Trial Survey"
+author: "Michael Maness"
+date: "November 18, 2019"
+output:
+  html_document: default
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(dplyr)
+library(tidyr)
+library(apollo)
+library(ggplot2)
+```
+
+## Load Dataset
+
+
+```{r load-data}
+data.wide <- read.csv('trial_data_freecharge_coded.csv')
+data.wide$ID <- 1:nrow(data.wide)
+design <- read.csv('experimental_design_trial.csv')
+```
+
+## Table Manipulation
+
+Let me changed the data into a long format based on scenario
+
+```{r data-long}
+data <- data.wide %>% pivot_longer(starts_with('Scenario'),
+                      names_to = c('ScenarioNum'),
+                      names_pattern = 'Scenario(.*)',
+                      values_to = 'Choice')
+```
+
+Now I want to get rid of the rows from the unseen scenarios.
+
+```{r data-elim-scenarios}
+data <- data %>% filter(!is.na(Choice))
+```
+
+Lets combine the scenario design data with the choice data:
+
+```{r combine-data-design}
+colnames(design)[1] <- 'ScenarioNum'
+data$ScenarioNum <- as.integer(data$ScenarioNum)
+data <- left_join(data,design, by='ScenarioNum')
+```
+
+
+## Descriptive Statistics
+
+Lets get some stats on scenario choice
+
+```{r stats-01}
+scenario_counts <- data %>% group_by(ScenarioNum) %>% count(Choice)
+as.data.frame(scenario_counts %>% pivot_wider(names_from = 'Choice', values_from = 'n'))
+
+ggplot(data, aes(x=Choice)) + geom_bar() + facet_wrap(~ScenarioNum)
+
+
+```
+
+
+## Apollo Setup
+
+```{r apollo-setup}
+### Initialise code
+apollo_initialise()
+
+### Set core controls
+apollo_control = list(
+  modelName  ="Charger_Choice_MNL_linear_price",
+  modelDescr ="Simple MNL model with linear price",
+  indivID    ="ID"
+)
+```
+
+## Apollo: Analysis of Choice
+
+```{r apollo-choice-analysis}
+ABC_avail = rep.int(x = 1, times = nrow(data))
+database <- as.data.frame(data)
+
+choiceAnalysis_settings <- list(
+  alternatives = c(A=1, B=2, C=3),
+  avail        = list(A=ABC_avail, B=ABC_avail, C=ABC_avail),
+  choiceVar    = database$Choice,
+  explanators  = database[,c("Gender")]
+)
+
+apollo_choiceAnalysis(choiceAnalysis_settings, apollo_control, database)
+```
+
+## Apollo: Define Model Parameters
+
+```{r model-params}
+### Vector of parameters, including any that are kept fixed in estimation
+apollo_beta=c(asc_A   = 0,
+              asc_B   = 0,
+              asc_C   = 0,
+              beta_price = 0,
+              beta_free = 0,
+              beta_chargetime = 0,
+              beta_detourtime = 0,
+              beta_restaurant = 0,
+              beta_convstore = 0,
+              beta_mall = 0)
+
+### Vector with names (in quotes) of parameters to be kept fixed at their starting value in apollo_beta, use apollo_beta_fixed = c() if none
+apollo_fixed = c("asc_A")
+
+apollo_inputs = apollo_validateInputs()
+```
+
+## Apollo: Likelihood Function and Model Definition
+
+```{r apollo-likelihood}
+apollo_probabilities=function(apollo_beta, apollo_inputs, functionality="estimate"){
+
+  ### Attach inputs and detach after function exit
+  apollo_attach(apollo_beta, apollo_inputs)
+  on.exit(apollo_detach(apollo_beta, apollo_inputs))
+
+  ### Create list of probabilities P
+  P = list()
+  
+  ### List of utilities: these must use the same names as in mnl_settings, order is irrelevant
+  V = list()
+  V[['A']]  = asc_A + beta_price * alt1.price + 
+                      beta_free * (alt1.price == 0) +
+                      beta_chargetime * alt1.charge_time + 
+                      beta_detourtime * alt1.detour_time +
+                      beta_convstore * (alt1.amenities == -1) + 
+                      beta_restaurant * (alt1.amenities == 1) + 
+                      beta_mall * (alt1.amenities == 3)
+  V[['B']]  = asc_B + beta_price * alt2.price + 
+                      beta_free * (alt2.price == 0) +
+                      beta_chargetime * alt2.charge_time + 
+                      beta_detourtime * alt2.detour_time +
+                      beta_convstore * (alt2.amenities == -1) + 
+                      beta_restaurant * (alt2.amenities == 1) + 
+                      beta_mall * (alt2.amenities == 3)
+  V[['C']]  = asc_C + beta_price * alt3.price + 
+                      beta_free * (alt3.price == 0) +
+                      beta_chargetime * alt3.charge_time + 
+                      beta_detourtime * alt3.detour_time +
+                      beta_convstore * (alt3.amenities == -1) + 
+                      beta_restaurant * (alt3.amenities == 1) + 
+                      beta_mall * (alt3.amenities == 3)
+  
+  ### Define settings for MNL model component
+  mnl_settings = list(
+    alternatives  = c(A=1, B=2, C=3), 
+    avail         = list(A=ABC_avail, B=ABC_avail, C=ABC_avail), 
+    choiceVar     = Choice,
+    V             = V
+  )
+  
+  ### Compute probabilities using MNL model
+  P[['model']] = apollo_mnl(mnl_settings, functionality)
+
+  ### Take product across observation for same individual
+  P = apollo_panelProd(P, apollo_inputs, functionality)
+
+  ### Prepare and return outputs of function
+  P = apollo_prepareProb(P, apollo_inputs, functionality)
+  return(P)
+}
+```
+
+## Apollo: Model Estimation and Output
+
+```{r apollo-model-estimation}
+model = apollo_estimate(apollo_beta, apollo_fixed, apollo_probabilities, apollo_inputs)
+
+apollo_modelOutput(model)
+```
+
+## Second estimation with quadratic price
+
+Now I want to try the estimation again with a quadratic price relationship instead
+
+```{r quadratic-price-estimation}
+### Initialise code
+apollo_initialise()
+
+### Set core controls
+apollo_control = list(
+  modelName  ="Charger_Choice_MNL_quadratic_price",
+  modelDescr ="Simple MNL model with linear price",
+  indivID    ="ID"
+)
+
+ABC_avail = rep.int(x = 1, times = nrow(data))
+database <- as.data.frame(data)
+
+choiceAnalysis_settings <- list(
+  alternatives = c(A=1, B=2, C=3),
+  avail        = list(A=ABC_avail, B=ABC_avail, C=ABC_avail),
+  choiceVar    = database$Choice,
+  explanators  = database[,c("Gender")]
+)
+
+apollo_choiceAnalysis(choiceAnalysis_settings, apollo_control, database)
+
+### Vector of parameters, including any that are kept fixed in estimation
+apollo_beta=c(asc_A   = 0,
+              asc_B   = 0,
+              asc_C   = 0,
+              beta_price = 0,
+              beta_price_squared = 0,
+              beta_free = 0,
+              beta_chargetime = 0,
+              beta_detourtime = 0,
+              beta_restaurant = 0,
+              beta_convstore = 0,
+              beta_mall = 0)
+
+### Vector with names (in quotes) of parameters to be kept fixed at their starting value in apollo_beta, use apollo_beta_fixed = c() if none
+apollo_fixed = c("asc_A")
+
+apollo_inputs = apollo_validateInputs()
+
+apollo_probabilities=function(apollo_beta, apollo_inputs, functionality="estimate"){
+
+  ### Attach inputs and detach after function exit
+  apollo_attach(apollo_beta, apollo_inputs)
+  on.exit(apollo_detach(apollo_beta, apollo_inputs))
+
+  ### Create list of probabilities P
+  P = list()
+  
+  ### List of utilities: these must use the same names as in mnl_settings, order is irrelevant
+  V = list()
+  V[['A']]  = asc_A + beta_price * alt1.price + 
+                      beta_price_squared * alt1.price^2 +
+                      beta_free * (alt1.price == 0) +
+                      beta_chargetime * alt1.charge_time + 
+                      beta_detourtime * alt1.detour_time +
+                      beta_convstore * (alt1.amenities == -1) + 
+                      beta_restaurant * (alt1.amenities == 1) + 
+                      beta_mall * (alt1.amenities == 3)
+  V[['B']]  = asc_B + beta_price * alt2.price + 
+                      beta_price_squared * alt2.price^2 +
+                      beta_free * (alt2.price == 0) +
+                      beta_chargetime * alt2.charge_time + 
+                      beta_detourtime * alt2.detour_time +
+                      beta_convstore * (alt2.amenities == -1) + 
+                      beta_restaurant * (alt2.amenities == 1) + 
+                      beta_mall * (alt2.amenities == 3)
+  V[['C']]  = asc_C + beta_price * alt3.price + 
+                      beta_price_squared * alt3.price^2 +
+                      beta_free * (alt3.price == 0) +
+                      beta_chargetime * alt3.charge_time + 
+                      beta_detourtime * alt3.detour_time +
+                      beta_convstore * (alt3.amenities == -1) + 
+                      beta_restaurant * (alt3.amenities == 1) + 
+                      beta_mall * (alt3.amenities == 3)
+  
+  ### Define settings for MNL model component
+  mnl_settings = list(
+    alternatives  = c(A=1, B=2, C=3), 
+    avail         = list(A=ABC_avail, B=ABC_avail, C=ABC_avail), 
+    choiceVar     = Choice,
+    V             = V
+  )
+  
+  ### Compute probabilities using MNL model
+  P[['model']] = apollo_mnl(mnl_settings, functionality)
+
+  ### Take product across observation for same individual
+  P = apollo_panelProd(P, apollo_inputs, functionality)
+
+  ### Prepare and return outputs of function
+  P = apollo_prepareProb(P, apollo_inputs, functionality)
+  return(P)
+}
+
+model2 = apollo_estimate(apollo_beta, apollo_fixed, apollo_probabilities, apollo_inputs)
+
+apollo_modelOutput(model2)
+```
+
+
+## Third estimation with quadratic price and no ASCs
+
+```{r estimation-quadratic-noASC}
+### Initialise code
+apollo_initialise()
+
+### Set core controls
+apollo_control = list(
+  modelName  ="Charger_Choice_MNL_quadratic_price_noASC",
+  modelDescr ="Simple MNL model with linear price",
+  indivID    ="ID"
+)
+
+ABC_avail = rep.int(x = 1, times = nrow(data))
+database <- as.data.frame(data)
+
+choiceAnalysis_settings <- list(
+  alternatives = c(A=1, B=2, C=3),
+  avail        = list(A=ABC_avail, B=ABC_avail, C=ABC_avail),
+  choiceVar    = database$Choice,
+  explanators  = database[,c("Gender")]
+)
+
+apollo_choiceAnalysis(choiceAnalysis_settings, apollo_control, database)
+
+### Vector of parameters, including any that are kept fixed in estimation
+apollo_beta=c(asc_A   = 0,
+              asc_B   = 0,
+              asc_C   = 0,
+              beta_price = 0,
+              beta_price_squared = 0,
+              beta_free = 0,
+              beta_chargetime = 0,
+              beta_detourtime = 0,
+              beta_restaurant = 0,
+              beta_convstore = 0,
+              beta_mall = 0)
+
+### Vector with names (in quotes) of parameters to be kept fixed at their starting value in apollo_beta, use apollo_beta_fixed = c() if none
+apollo_fixed = c("asc_A", "asc_B", "asc_C")
+
+apollo_inputs = apollo_validateInputs()
+
+apollo_probabilities=function(apollo_beta, apollo_inputs, functionality="estimate"){
+
+  ### Attach inputs and detach after function exit
+  apollo_attach(apollo_beta, apollo_inputs)
+  on.exit(apollo_detach(apollo_beta, apollo_inputs))
+
+  ### Create list of probabilities P
+  P = list()
+  
+  ### List of utilities: these must use the same names as in mnl_settings, order is irrelevant
+  V = list()
+  V[['A']]  = asc_A + beta_price * alt1.price + 
+                      beta_price_squared * alt1.price^2 +
+                      beta_free * (alt1.price == 0) +
+                      beta_chargetime * alt1.charge_time + 
+                      beta_detourtime * alt1.detour_time +
+                      beta_convstore * (alt1.amenities == -1) + 
+                      beta_restaurant * (alt1.amenities == 1) + 
+                      beta_mall * (alt1.amenities == 3)
+  V[['B']]  = asc_B + beta_price * alt2.price + 
+                      beta_price_squared * alt2.price^2 +
+                      beta_free * (alt2.price == 0) +
+                      beta_chargetime * alt2.charge_time + 
+                      beta_detourtime * alt2.detour_time +
+                      beta_convstore * (alt2.amenities == -1) + 
+                      beta_restaurant * (alt2.amenities == 1) + 
+                      beta_mall * (alt2.amenities == 3)
+  V[['C']]  = asc_C + beta_price * alt3.price + 
+                      beta_price_squared * alt3.price^2 +
+                      beta_free * (alt3.price == 0) +
+                      beta_chargetime * alt3.charge_time + 
+                      beta_detourtime * alt3.detour_time +
+                      beta_convstore * (alt3.amenities == -1) + 
+                      beta_restaurant * (alt3.amenities == 1) + 
+                      beta_mall * (alt3.amenities == 3)
+  
+  ### Define settings for MNL model component
+  mnl_settings = list(
+    alternatives  = c(A=1, B=2, C=3), 
+    avail         = list(A=ABC_avail, B=ABC_avail, C=ABC_avail), 
+    choiceVar     = Choice,
+    V             = V
+  )
+  
+  ### Compute probabilities using MNL model
+  P[['model']] = apollo_mnl(mnl_settings, functionality)
+
+  ### Take product across observation for same individual
+  P = apollo_panelProd(P, apollo_inputs, functionality)
+
+  ### Prepare and return outputs of function
+  P = apollo_prepareProb(P, apollo_inputs, functionality)
+  return(P)
+}
+
+model3 = apollo_estimate(apollo_beta, apollo_fixed, apollo_probabilities, apollo_inputs)
+
+apollo_modelOutput(model3)
+```
+
+## Fourth estimation with Linear Price and No ASC
+
+```{r estimation-linear-noASC}
+### Initialise code
+apollo_initialise()
+
+### Set core controls
+apollo_control = list(
+  modelName  ="Charger_Choice_MNL_linear_price_noASC",
+  modelDescr ="Simple MNL model with linear price",
+  indivID    ="ID"
+)
+
+ABC_avail = rep.int(x = 1, times = nrow(data))
+database <- as.data.frame(data)
+
+choiceAnalysis_settings <- list(
+  alternatives = c(A=1, B=2, C=3),
+  avail        = list(A=ABC_avail, B=ABC_avail, C=ABC_avail),
+  choiceVar    = database$Choice,
+  explanators  = database[,c("Gender")]
+)
+
+apollo_choiceAnalysis(choiceAnalysis_settings, apollo_control, database)
+
+### Vector of parameters, including any that are kept fixed in estimation
+apollo_beta=c(asc_A   = 0,
+              asc_B   = 0,
+              asc_C   = 0,
+              beta_price = 0,
+              beta_free = 0,
+              beta_chargetime = 0,
+              beta_detourtime = 0,
+              beta_restaurant = 0,
+              beta_convstore = 0,
+              beta_mall = 0)
+
+### Vector with names (in quotes) of parameters to be kept fixed at their starting value in apollo_beta, use apollo_beta_fixed = c() if none
+apollo_fixed = c("asc_A", "asc_B", "asc_C")
+
+apollo_inputs = apollo_validateInputs()
+
+apollo_probabilities=function(apollo_beta, apollo_inputs, functionality="estimate"){
+
+  ### Attach inputs and detach after function exit
+  apollo_attach(apollo_beta, apollo_inputs)
+  on.exit(apollo_detach(apollo_beta, apollo_inputs))
+
+  ### Create list of probabilities P
+  P = list()
+  
+  ### List of utilities: these must use the same names as in mnl_settings, order is irrelevant
+  V = list()
+  V[['A']]  = asc_A + beta_price * alt1.price + 
+                      beta_free * (alt1.price == 0) +
+                      beta_chargetime * alt1.charge_time + 
+                      beta_detourtime * alt1.detour_time +
+                      beta_convstore * (alt1.amenities == -1) + 
+                      beta_restaurant * (alt1.amenities == 1) + 
+                      beta_mall * (alt1.amenities == 3)
+  V[['B']]  = asc_B + beta_price * alt2.price + 
+                      beta_free * (alt2.price == 0) +
+                      beta_chargetime * alt2.charge_time + 
+                      beta_detourtime * alt2.detour_time +
+                      beta_convstore * (alt2.amenities == -1) + 
+                      beta_restaurant * (alt2.amenities == 1) + 
+                      beta_mall * (alt2.amenities == 3)
+  V[['C']]  = asc_C + beta_price * alt3.price + 
+                      beta_free * (alt3.price == 0) +
+                      beta_chargetime * alt3.charge_time + 
+                      beta_detourtime * alt3.detour_time +
+                      beta_convstore * (alt3.amenities == -1) + 
+                      beta_restaurant * (alt3.amenities == 1) + 
+                      beta_mall * (alt3.amenities == 3)
+  
+  ### Define settings for MNL model component
+  mnl_settings = list(
+    alternatives  = c(A=1, B=2, C=3), 
+    avail         = list(A=ABC_avail, B=ABC_avail, C=ABC_avail), 
+    choiceVar     = Choice,
+    V             = V
+  )
+  
+  ### Compute probabilities using MNL model
+  P[['model']] = apollo_mnl(mnl_settings, functionality)
+
+  ### Take product across observation for same individual
+  P = apollo_panelProd(P, apollo_inputs, functionality)
+
+  ### Prepare and return outputs of function
+  P = apollo_prepareProb(P, apollo_inputs, functionality)
+  return(P)
+}
+
+model4 = apollo_estimate(apollo_beta, apollo_fixed, apollo_probabilities, apollo_inputs)
+
+apollo_modelOutput(model4)
+```
+

@@ -1,0 +1,2 @@
+"0","scenario_counts <- data %>% group_by(ScenarioNum) %>% count(Choice)"
+"0","as.data.frame(scenario_counts %>% pivot_wider(names_from = 'Choice', values_from = 'n'))"

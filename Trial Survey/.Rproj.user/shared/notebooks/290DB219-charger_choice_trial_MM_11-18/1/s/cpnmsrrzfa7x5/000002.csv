@@ -1,0 +1,3 @@
+"0","data.wide <- read.csv('trial_data_freecharge_coded.csv')"
+"0","data.wide$ID <- 1:nrow(data.wide)"
+"0","design <- read.csv('experimental_design_trial.csv')"
